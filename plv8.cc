@@ -1078,7 +1078,7 @@ CreateExecEnv(Handle<Function> function)
 }
 
 /* Source transformation from a dialect (coffee or ls) to js */
-static char *
+char *
 CompileDialect(const char *src, Dialect dialect)
 {
 	HandleScope		handle_scope(plv8_isolate);
