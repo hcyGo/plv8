@@ -22,6 +22,7 @@ using namespace v8;
 
 static void plv8_FunctionInvoker(const FunctionCallbackInfo<v8::Value>& args) throw();
 static void plv8_Elog(const FunctionCallbackInfo<v8::Value>& args);
+static void plv8_Compile(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_Execute(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_Prepare(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_PlanCursor(const FunctionCallbackInfo<v8::Value>& args);
@@ -224,6 +225,7 @@ SetupPlv8Functions(Handle<ObjectTemplate> plv8)
 		PropertyAttribute(ReadOnly | DontEnum | DontDelete);
 
 	SetCallback(plv8, "elog", plv8_Elog, attrFull);
+	SetCallback(plv8, "compile", plv8_Compile, attrFull);
 	SetCallback(plv8, "execute", plv8_Execute, attrFull);
 	SetCallback(plv8, "prepare", plv8_Prepare, attrFull);
 	SetCallback(plv8, "return_next", plv8_ReturnNext, attrFull);
@@ -382,6 +384,18 @@ plv8_Elog(const FunctionCallbackInfo<v8::Value>& args)
 	PG_END_TRY();
 
 	args.GetReturnValue().Set(Undefined(plv8_isolate));
+}
+
+static void
+plv8_Compile(const FunctionCallbackInfo<v8::Value>& args)
+{
+	StringInfoData	src;
+	initStringInfo(&src);
+	appendStringInfo(&src," Compiled");
+
+	Local<String> source = ToString(src.data, src.len);
+	pfree(src.data);
+	args.GetReturnValue().Set(source);
 }
 
 static Datum
