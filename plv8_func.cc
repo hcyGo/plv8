@@ -420,7 +420,7 @@ plv8_CompileType(const FunctionCallbackInfo<v8::Value>& args)
 		return;
 	}
 	CString			instr(args[0]);
-	args.GetReturnValue().Set(ToString(CompileDialect(instr.str(), PLV*_DIALECT_TYPESCRIPT)));
+	args.GetReturnValue().Set(ToString(CompileDialect(instr.str(), PLV8_DIALECT_TYPESCRIPT)));
 }
 
 static Datum
