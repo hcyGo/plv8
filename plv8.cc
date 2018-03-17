@@ -119,7 +119,7 @@ static HTAB *plv8_proc_cache_hash = NULL;
 
 static plv8_exec_env		   *exec_env_head = NULL;
 
-extern const unsigned char coffee_script_binary_data[];
+extern const unsigned char coffeescript_binary_data[];
 extern const unsigned char livescript_binary_data[];
 extern const unsigned char typescript_binary_data[];
 
@@ -1110,10 +1110,10 @@ CompileDialect(const char *src, Dialect dialect)
 	switch (dialect)
 	{
 		case PLV8_DIALECT_COFFEE:
-			if (coffee_script_binary_data[0] == '\0')
+			if (coffeescript_binary_data[0] == '\0')
 				throw js_error("CoffeeScript is not enabled");
 			key = String::NewFromUtf8(plv8_isolate, "CoffeeScript", String::kInternalizedString);
-			dialect_binary_data = (const char *) coffee_script_binary_data;
+			dialect_binary_data = (const char *) coffeescript_binary_data;
 			break;
 		case PLV8_DIALECT_LIVESCRIPT:
 			if (livescript_binary_data[0] == '\0')
