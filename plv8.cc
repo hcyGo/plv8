@@ -121,6 +121,7 @@ static plv8_exec_env		   *exec_env_head = NULL;
 
 extern const unsigned char coffee_script_binary_data[];
 extern const unsigned char livescript_binary_data[];
+extern const unsigned char typescript_binary_data[];
 
 class Plv8ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
  public:
@@ -1119,6 +1120,12 @@ CompileDialect(const char *src, Dialect dialect)
 				throw js_error("LiveScript is not enabled");
 			key = String::NewFromUtf8(plv8_isolate, "LiveScript", String::kInternalizedString);
 			dialect_binary_data = (const char *) livescript_binary_data;
+			break;
+		case PLV8_DIALECT_TYPESCRIPT:
+			if (typescript_binary_data[0] == '\0')
+				throw js_error("TypeScript is not enabled");
+			key = String::NewFromUtf8(plv8_isolate, "TypeScript", String::kInternalizedString);
+			dialect_binary_data = (const char *) typescript_binary_data;
 			break;
 		default:
 			throw js_error("Unknown Dialect");

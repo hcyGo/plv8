@@ -41,7 +41,7 @@ extern "C" {
 #define PLV8_INTNL_FCINFO		3
 #define PLV8_INTNL_MAX			4
 
-enum Dialect{ PLV8_DIALECT_NONE, PLV8_DIALECT_COFFEE, PLV8_DIALECT_LIVESCRIPT };
+enum Dialect{ PLV8_DIALECT_NONE, PLV8_DIALECT_COFFEE, PLV8_DIALECT_LIVESCRIPT ,PLV8_DIALECT_TYPESCRIPT };
 
 /* js_error represents exceptions in JavaScript. */
 class js_error

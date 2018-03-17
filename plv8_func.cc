@@ -24,6 +24,7 @@ static void plv8_FunctionInvoker(const FunctionCallbackInfo<v8::Value>& args) th
 static void plv8_Elog(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_CompileCoffee(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_CompileLive(const FunctionCallbackInfo<v8::Value>& args);
+static void plv8_CompileType(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_Execute(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_Prepare(const FunctionCallbackInfo<v8::Value>& args);
 static void plv8_PlanCursor(const FunctionCallbackInfo<v8::Value>& args);
@@ -227,6 +228,7 @@ SetupPlv8Functions(Handle<ObjectTemplate> plv8)
 
 	SetCallback(plv8, "elog", plv8_Elog, attrFull);
 	SetCallback(plv8, "compile_coffee", plv8_CompileCoffee, attrFull);
+	SetCallback(plv8, "compile_type", plv8_CompileType, attrFull);
 	SetCallback(plv8, "compile_live", plv8_CompileLive, attrFull);
 	SetCallback(plv8, "execute", plv8_Execute, attrFull);
 	SetCallback(plv8, "prepare", plv8_Prepare, attrFull);
@@ -408,6 +410,17 @@ plv8_CompileLive(const FunctionCallbackInfo<v8::Value>& args)
 	}
 	CString			instr(args[0]);
 	args.GetReturnValue().Set(ToString(CompileDialect(instr.str(), PLV8_DIALECT_LIVESCRIPT)));
+}
+
+static void
+plv8_CompileType(const FunctionCallbackInfo<v8::Value>& args)
+{
+	if (args.Length() <1 ) {
+		args.GetReturnValue().Set(Undefined(plv8_isolate));
+		return;
+	}
+	CString			instr(args[0]);
+	args.GetReturnValue().Set(ToString(CompileDialect(instr.str(), PLV*_DIALECT_TYPESCRIPT)));
 }
 
 static Datum

@@ -1,0 +1,3 @@
+https://github.com/Microsoft/TypeScript
+
+/usr/lib/node_modules/typescript/lib/tsc.js
