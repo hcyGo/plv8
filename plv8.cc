@@ -28,6 +28,10 @@ extern "C" {
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#ifdef EXECUTION_TIMEOUT
+#include <unistd.h>
+#endif
+
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(plv8_call_handler);
@@ -121,7 +125,6 @@ static plv8_exec_env		   *exec_env_head = NULL;
 
 extern const unsigned char coffeescript_binary_data[];
 extern const unsigned char livescript_binary_data[];
-extern const unsigned char typescript_binary_data[];
 
 class Plv8ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
  public:
@@ -216,6 +219,11 @@ static char *plv8_icu_data = NULL;
 
 /* A GUC to specify the remote debugger port */
 static int plv8_debugger_port;
+
+#ifdef EXECUTION_TIMEOUT
+static int plv8_execution_timeout = 300;
+#endif
+
 /*
  * We use vector instead of hash since the size of this array
  * is expected to be short in most cases.
@@ -302,6 +310,21 @@ _PG_init(void)
 #endif
 							NULL,
 							NULL);
+
+#ifdef EXECUTION_TIMEOUT
+	DefineCustomIntVariable("plv8.execution_timeout",
+							gettext_noop("V8 execution timeout."),
+							gettext_noop("The default value is 300 seconds.  "
+										 "This allows you to override the default execution timeout."),
+							&plv8_execution_timeout,
+							300, 1, 65536,
+							PGC_USERSET, 0,
+#if PG_VERSION_NUM >= 90100
+							NULL,
+#endif
+							NULL,
+							NULL);
+#endif
 
 	RegisterXactCallback(plv8_xact_cb, NULL);
 
@@ -475,6 +498,23 @@ plls_inline_handler(PG_FUNCTION_ARGS)
 }
 #endif
 
+#ifdef EXECUTION_TIMEOUT
+/*
+ * Breakout -- break out of a Call, with a thread
+ *
+ * This function breaks out of a javascript execution context.
+ */
+void *
+Breakout (void *d)
+{
+	sleep(plv8_execution_timeout);
+	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+	v8::V8::TerminateExecution(plv8_isolate);
+
+	return NULL;
+}
+#endif
+
 /*
  * DoCall -- Call a JS function with SPI support.
  *
@@ -485,11 +525,31 @@ DoCall(Handle<Function> fn, Handle<Object> receiver,
 	int nargs, Handle<v8::Value> args[])
 {
 	TryCatch		try_catch;
+#ifdef EXECUTION_TIMEOUT
+	pthread_t breakout_thread;
+	void *thread_result;
+#endif
 
 	if (SPI_connect() != SPI_OK_CONNECT)
 		throw js_error("could not connect to SPI manager");
+
+#ifdef EXECUTION_TIMEOUT
+	// set up the thread to break out the execution if needed
+	pthread_create(&breakout_thread, NULL, Breakout, NULL);
+#endif
+
 	Local<v8::Value> result = fn->Call(receiver, nargs, args);
 	int	status = SPI_finish();
+
+#ifdef EXECUTION_TIMEOUT
+	pthread_cancel(breakout_thread);
+	pthread_join(breakout_thread, &thread_result);
+
+	if (thread_result == NULL) {
+		//elog(ERROR, "PLV8 Execution Timeout exceeded");
+		throw js_error("execution timeout exceeded");
+	}
+#endif
 
 	if (result.IsEmpty())
 		throw js_error(try_catch);
@@ -1120,12 +1180,6 @@ CompileDialect(const char *src, Dialect dialect)
 				throw js_error("LiveScript is not enabled");
 			key = String::NewFromUtf8(plv8_isolate, "LiveScript", String::kInternalizedString);
 			dialect_binary_data = (const char *) livescript_binary_data;
-			break;
-		case PLV8_DIALECT_TYPESCRIPT:
-			if (typescript_binary_data[0] == '\0')
-				throw js_error("TypeScript is not enabled");
-			key = String::NewFromUtf8(plv8_isolate, "TypeScript", String::kInternalizedString);
-			dialect_binary_data = (const char *) typescript_binary_data;
 			break;
 		default:
 			throw js_error("Unknown Dialect");
