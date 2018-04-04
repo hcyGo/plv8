@@ -227,7 +227,7 @@ SetupPlv8Functions(Handle<ObjectTemplate> plv8)
 
 	SetCallback(plv8, "elog", plv8_Elog, attrFull);
 	SetCallback(plv8, "compile_coffee", plv8_CompileCoffee, attrFull);
-	SetCallback(plv8, "compile_type", plv8_CompileType, attrFull);
+        SetCallback(plv8, "compile_live", plv8_CompileLive, attrFull);
 	SetCallback(plv8, "execute", plv8_Execute, attrFull);
 	SetCallback(plv8, "prepare", plv8_Prepare, attrFull);
 	SetCallback(plv8, "return_next", plv8_ReturnNext, attrFull);
