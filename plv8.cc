@@ -6,6 +6,11 @@
  *-------------------------------------------------------------------------
  */
 #include "plv8.h"
+
+#ifdef _MSC_VER
+#undef open
+#endif
+
 #include "libplatform/libplatform.h"
 
 #include <new>
@@ -28,11 +33,24 @@ extern "C" {
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include <signal.h>
+
 #ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 #endif
 
 PG_MODULE_MAGIC;
+
+PGDLLEXPORT Datum	plv8_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plv8_call_validator(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_call_validator(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_call_validator(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(plv8_call_handler);
 PG_FUNCTION_INFO_V1(plv8_call_validator);
@@ -41,22 +59,17 @@ PG_FUNCTION_INFO_V1(plcoffee_call_validator);
 PG_FUNCTION_INFO_V1(plls_call_handler);
 PG_FUNCTION_INFO_V1(plls_call_validator);
 
-Datum	plv8_call_handler(PG_FUNCTION_ARGS);
-Datum	plv8_call_validator(PG_FUNCTION_ARGS);
-Datum	plcoffee_call_handler(PG_FUNCTION_ARGS);
-Datum	plcoffee_call_validator(PG_FUNCTION_ARGS);
-Datum	plls_call_handler(PG_FUNCTION_ARGS);
-Datum	plls_call_validator(PG_FUNCTION_ARGS);
 
-void _PG_init(void);
+PGDLLEXPORT void _PG_init(void);
 
 #if PG_VERSION_NUM >= 90000
+PGDLLEXPORT Datum	plv8_inline_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_inline_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_inline_handler(PG_FUNCTION_ARGS);
+
 PG_FUNCTION_INFO_V1(plv8_inline_handler);
 PG_FUNCTION_INFO_V1(plcoffee_inline_handler);
 PG_FUNCTION_INFO_V1(plls_inline_handler);
-Datum	plv8_inline_handler(PG_FUNCTION_ARGS);
-Datum	plcoffee_inline_handler(PG_FUNCTION_ARGS);
-Datum	plls_inline_handler(PG_FUNCTION_ARGS);
 #endif
 } // extern "C"
 
@@ -287,7 +300,7 @@ _PG_init(void)
 								 NULL);
 
 	DefineCustomStringVariable("plv8.v8_flags",
-							   gettext_noop("V8 engine initialization flags (e.g. --es_staging for additional ES6 features)."),
+							   gettext_noop("V8 engine initialization flags (e.g. --harmony for all current harmony features)."),
 							   NULL,
 							   &plv8_v8_flags,
 							   NULL,
@@ -338,7 +351,7 @@ _PG_init(void)
 		V8::InitializeICU(plv8_icu_data);
 	}
 
-#if V8_MAJOR_VERSION == 4 && V8_MINOR_VERSION >= 6
+#if (V8_MAJOR_VERSION == 4 && V8_MINOR_VERSION >= 6) || V8_MAJOR_VERSION >= 5
 	V8::InitializeExternalStartupData("plv8");
 #endif
 	Platform* platform = platform::CreateDefaultPlatform();
@@ -504,6 +517,16 @@ plls_inline_handler(PG_FUNCTION_ARGS)
  *
  * This function breaks out of a javascript execution context.
  */
+#ifdef _MSC_VER // windows
+DWORD WINAPI
+Breakout (LPVOID lpParam)
+{
+	Sleep(plv8_execution_timeout * 1000);
+	v8::V8::TerminateExecution(plv8_isolate);
+
+	return 0;
+}
+#else // posix
 void *
 Breakout (void *d)
 {
@@ -514,6 +537,20 @@ Breakout (void *d)
 	return NULL;
 }
 #endif
+#endif
+void *int_handler = NULL;
+void *term_handler = NULL;
+
+/*
+ * signal handler
+ *
+ * This function kills the execution of the v8 process if a signal is called
+ */
+void
+signal_handler (int sig) {
+	elog(DEBUG1, "cancelling execution");
+	v8::V8::TerminateExecution(plv8_isolate);
+}
 
 /*
  * DoCall -- Call a JS function with SPI support.
@@ -526,30 +563,53 @@ DoCall(Handle<Function> fn, Handle<Object> receiver,
 {
 	TryCatch		try_catch;
 #ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER
+	HANDLE  hThread;
+	DWORD dwThreadId;
+#else
 	pthread_t breakout_thread;
 	void *thread_result;
+#endif
 #endif
 
 	if (SPI_connect() != SPI_OK_CONNECT)
 		throw js_error("could not connect to SPI manager");
 
+	// set up the signal handlers
+	int_handler = (void *) signal(SIGINT, signal_handler);
+	term_handler = (void *) signal(SIGTERM, signal_handler);
+
 #ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER // windows
+	hThread = CreateThread(NULL, 0, Breakout, NULL, 0, &dwThreadId);
+#else
 	// set up the thread to break out the execution if needed
 	pthread_create(&breakout_thread, NULL, Breakout, NULL);
+#endif
 #endif
 
 	Local<v8::Value> result = fn->Call(receiver, nargs, args);
 	int	status = SPI_finish();
 
 #ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER
+	BOOL cancel_state = TerminateThread(hThread, NULL);
+
+	if (cancel_state == 0) {
+		throw js_error("execution timeout exceeded");
+	}
+#else
 	pthread_cancel(breakout_thread);
 	pthread_join(breakout_thread, &thread_result);
 
 	if (thread_result == NULL) {
-		//elog(ERROR, "PLV8 Execution Timeout exceeded");
 		throw js_error("execution timeout exceeded");
 	}
 #endif
+#endif
+
+	signal(SIGINT, (void (*)(int)) int_handler);
+	signal(SIGTERM, (void (*)(int)) term_handler);
 
 	if (result.IsEmpty())
 		throw js_error(try_catch);
@@ -1533,19 +1593,20 @@ GetGlobalContext(Persistent<Context>& global_context)
 			char perm[16];
 			strcpy(perm, "EXECUTE");
 			arg = charToText(perm);
-			Oid funcoid = DatumGetObjectId(DirectFunctionCall1(regprocin, CStringGetDatum(plv8_start_proc)));
-
-			MemSet(&fake_fcinfo, 0, sizeof(fake_fcinfo));
-			MemSet(&flinfo, 0, sizeof(flinfo));
-			fake_fcinfo.flinfo = &flinfo;
-			flinfo.fn_oid = InvalidOid;
-			flinfo.fn_mcxt = CurrentMemoryContext;
-			fake_fcinfo.nargs = 2;
-			fake_fcinfo.arg[0] = ObjectIdGetDatum(funcoid);
-			fake_fcinfo.arg[1] = CStringGetDatum(arg);
 
 			PG_TRY();
 			{
+				Oid funcoid = DatumGetObjectId(DirectFunctionCall1(regprocin, CStringGetDatum(plv8_start_proc)));
+
+				MemSet(&fake_fcinfo, 0, sizeof(fake_fcinfo));
+				MemSet(&flinfo, 0, sizeof(flinfo));
+				fake_fcinfo.flinfo = &flinfo;
+				flinfo.fn_oid = InvalidOid;
+				flinfo.fn_mcxt = CurrentMemoryContext;
+				fake_fcinfo.nargs = 2;
+				fake_fcinfo.arg[0] = ObjectIdGetDatum(funcoid);
+				fake_fcinfo.arg[1] = CStringGetDatum(arg);
+
 				Datum ret = has_function_privilege_id(&fake_fcinfo);
 
 				if (ret == 0) {

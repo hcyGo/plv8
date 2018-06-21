@@ -18,4 +18,3 @@ To test, you can execute:
     =# DO $$ plv8.elog(NOTICE, "hello there!"); $$ LANGUAGE plv8;
 
 For full documentation, see [https://plv8.github.io/](https://plv8.github.io/).
->>>>>>> master

@@ -85,6 +85,18 @@ https://github.com/plv8/plv8/issues/29
     CUSTOM_CC = gcc
     SHLIB_LINK := $(SHLIB_LINK) -lv8 -Wl,-Bstatic -lstdc++ -Wl,-Bdynamic -lm
 
+### Building with Execution Timeout
+
+PL/v8 allows you to optionally build with an execution timeout for Javascript
+functions, when enabled at compile-time.
+
+    $ make -DEXECUTION_TIMEOUT
+
+By default, the execution timeout is not compiled, but when configured it has
+a timeout of `300 seconds` (5 minutes).  You can override this by setting the
+`plv8.execution_timeout` variable.  It can be set between `1 second` and
+`65536` seconds, but cannot be disabled.
+
 ### Installing the build:
 After running `make` or `make static` the following files must be copied to the
 correct location for PostgreSQL to find them:
@@ -147,7 +159,13 @@ This guide assumes you are using the [pgdg yum repository](https://yum.postgresq
 TODO
 
 ### Windows:
-TODO - PL/v8 supports Windows. A Pull Request for installation steps is greatly appreciated
+
+    $ bootstrap.bat
+    $ cmake . -G "Visual Studio 15 2017 Win64" -DCMAKE_INSTALL_PREFIX="C:\Program Files\PostgreSQL\9.6" -DPOSTGRESQL_VERSION=9.6
+    $ cmake --build . --config Release --target Package
+
+Unzip it, and copy to PostgreSQL directories.
+
 
 ## Install the PL/v8 Extensions on a Database:
 Once the PL/v8 extensions have been added to the server, you should restart the
