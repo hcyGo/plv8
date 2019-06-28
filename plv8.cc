@@ -6,6 +6,11 @@
  *-------------------------------------------------------------------------
  */
 #include "plv8.h"
+
+#ifdef _MSC_VER
+#undef open
+#endif
+
 #include "libplatform/libplatform.h"
 
 #include <new>
@@ -28,7 +33,24 @@ extern "C" {
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include <signal.h>
+
+#ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+#endif
+
 PG_MODULE_MAGIC;
+
+PGDLLEXPORT Datum	plv8_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plv8_call_validator(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_call_validator(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_call_validator(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(plv8_call_handler);
 PG_FUNCTION_INFO_V1(plv8_call_validator);
@@ -37,22 +59,17 @@ PG_FUNCTION_INFO_V1(plcoffee_call_validator);
 PG_FUNCTION_INFO_V1(plls_call_handler);
 PG_FUNCTION_INFO_V1(plls_call_validator);
 
-Datum	plv8_call_handler(PG_FUNCTION_ARGS);
-Datum	plv8_call_validator(PG_FUNCTION_ARGS);
-Datum	plcoffee_call_handler(PG_FUNCTION_ARGS);
-Datum	plcoffee_call_validator(PG_FUNCTION_ARGS);
-Datum	plls_call_handler(PG_FUNCTION_ARGS);
-Datum	plls_call_validator(PG_FUNCTION_ARGS);
 
-void _PG_init(void);
+PGDLLEXPORT void _PG_init(void);
 
 #if PG_VERSION_NUM >= 90000
+PGDLLEXPORT Datum	plv8_inline_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_inline_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_inline_handler(PG_FUNCTION_ARGS);
+
 PG_FUNCTION_INFO_V1(plv8_inline_handler);
 PG_FUNCTION_INFO_V1(plcoffee_inline_handler);
 PG_FUNCTION_INFO_V1(plls_inline_handler);
-Datum	plv8_inline_handler(PG_FUNCTION_ARGS);
-Datum	plcoffee_inline_handler(PG_FUNCTION_ARGS);
-Datum	plls_inline_handler(PG_FUNCTION_ARGS);
 #endif
 } // extern "C"
 
@@ -122,60 +139,6 @@ static plv8_exec_env		   *exec_env_head = NULL;
 extern const unsigned char coffee_script_binary_data[];
 extern const unsigned char livescript_binary_data[];
 
-class Plv8ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
- public:
-  void* Allocate(size_t length) override {
-    void* data = AllocateUninitialized(length);
-    return data == NULL ? data : memset(data, 0, length);
-  }
-
-	void* Reserve(size_t length) override {
-		return AllocateUninitialized(length);
-	}
-
-	void* AllocateUninitialized(size_t length) override {
-			void *data = NULL;
-			MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-
-			PG_TRY();
-			{
-					data = palloc(length);
-			}
-			PG_CATCH();
-			{
-					throw pg_error();
-			}
-			PG_END_TRY();
-
-			MemoryContextSwitchTo(oldcontext);
-
-			return data;
-	}
-
-  void Free(void* data, size_t) override {
-			MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-
-			PG_TRY();
-			{
-					pfree(data);
-			}
-			PG_CATCH();
-			{
-					throw pg_error();
-			}
-			PG_END_TRY();
-
-			MemoryContextSwitchTo(oldcontext);
-}
-
-void Free(void *data, size_t size, v8::ArrayBuffer::Allocator::AllocationMode) override {
-		Free(data, size);
-}
-
-	void SetProtection(void* data, size_t length,
-									 Protection protection) override {}
-};
-
 /*
  * lower_case_functions are postgres-like C functions.
  * They could raise errors with elog/ereport(ERROR).
@@ -215,6 +178,11 @@ static char *plv8_icu_data = NULL;
 
 /* A GUC to specify the remote debugger port */
 static int plv8_debugger_port;
+
+#ifdef EXECUTION_TIMEOUT
+static int plv8_execution_timeout = 300;
+#endif
+
 /*
  * We use vector instead of hash since the size of this array
  * is expected to be short in most cases.
@@ -278,7 +246,7 @@ _PG_init(void)
 								 NULL);
 
 	DefineCustomStringVariable("plv8.v8_flags",
-							   gettext_noop("V8 engine initialization flags (e.g. --es_staging for additional ES6 features)."),
+							   gettext_noop("V8 engine initialization flags (e.g. --harmony for all current harmony features)."),
 							   NULL,
 							   &plv8_v8_flags,
 							   NULL,
@@ -302,6 +270,21 @@ _PG_init(void)
 							NULL,
 							NULL);
 
+#ifdef EXECUTION_TIMEOUT
+	DefineCustomIntVariable("plv8.execution_timeout",
+							gettext_noop("V8 execution timeout."),
+							gettext_noop("The default value is 300 seconds.  "
+										 "This allows you to override the default execution timeout."),
+							&plv8_execution_timeout,
+							300, 1, 65536,
+							PGC_USERSET, 0,
+#if PG_VERSION_NUM >= 90100
+							NULL,
+#endif
+							NULL,
+							NULL);
+#endif
+
 	RegisterXactCallback(plv8_xact_cb, NULL);
 
 	EmitWarningsOnPlaceholders("plv8");
@@ -314,7 +297,7 @@ _PG_init(void)
 		V8::InitializeICU(plv8_icu_data);
 	}
 
-#if V8_MAJOR_VERSION == 4 && V8_MINOR_VERSION >= 6
+#if (V8_MAJOR_VERSION == 4 && V8_MINOR_VERSION >= 6) || V8_MAJOR_VERSION >= 5
 	V8::InitializeExternalStartupData("plv8");
 #endif
 	Platform* platform = platform::CreateDefaultPlatform();
@@ -324,7 +307,7 @@ _PG_init(void)
 	      V8::SetFlagsFromString(plv8_v8_flags, strlen(plv8_v8_flags));
 	}
 	Isolate::CreateParams params;
-	params.array_buffer_allocator = new Plv8ArrayBufferAllocator();
+	params.array_buffer_allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();;
 	plv8_isolate = Isolate::New(params);
 	plv8_isolate->Enter();
 
@@ -474,6 +457,47 @@ plls_inline_handler(PG_FUNCTION_ARGS)
 }
 #endif
 
+#ifdef EXECUTION_TIMEOUT
+/*
+ * Breakout -- break out of a Call, with a thread
+ *
+ * This function breaks out of a javascript execution context.
+ */
+#ifdef _MSC_VER // windows
+DWORD WINAPI
+Breakout (LPVOID lpParam)
+{
+	Sleep(plv8_execution_timeout * 1000);
+	v8::V8::TerminateExecution(plv8_isolate);
+
+	return 0;
+}
+#else // posix
+void *
+Breakout (void *d)
+{
+	sleep(plv8_execution_timeout);
+	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+	v8::V8::TerminateExecution(plv8_isolate);
+
+	return NULL;
+}
+#endif
+#endif
+void *int_handler = NULL;
+void *term_handler = NULL;
+
+/*
+ * signal handler
+ *
+ * This function kills the execution of the v8 process if a signal is called
+ */
+void
+signal_handler (int sig) {
+	elog(DEBUG1, "cancelling execution");
+	v8::V8::TerminateExecution(plv8_isolate);
+}
+
 /*
  * DoCall -- Call a JS function with SPI support.
  *
@@ -484,11 +508,54 @@ DoCall(Handle<Function> fn, Handle<Object> receiver,
 	int nargs, Handle<v8::Value> args[])
 {
 	TryCatch		try_catch;
+#ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER
+	HANDLE  hThread;
+	DWORD dwThreadId;
+#else
+	pthread_t breakout_thread;
+	void *thread_result;
+#endif
+#endif
 
 	if (SPI_connect() != SPI_OK_CONNECT)
 		throw js_error("could not connect to SPI manager");
+
+	// set up the signal handlers
+	int_handler = (void *) signal(SIGINT, signal_handler);
+	term_handler = (void *) signal(SIGTERM, signal_handler);
+
+#ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER // windows
+	hThread = CreateThread(NULL, 0, Breakout, NULL, 0, &dwThreadId);
+#else
+	// set up the thread to break out the execution if needed
+	pthread_create(&breakout_thread, NULL, Breakout, NULL);
+#endif
+#endif
+
 	Local<v8::Value> result = fn->Call(receiver, nargs, args);
 	int	status = SPI_finish();
+
+#ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER
+	BOOL cancel_state = TerminateThread(hThread, NULL);
+
+	if (cancel_state == 0) {
+		throw js_error("execution timeout exceeded");
+	}
+#else
+	pthread_cancel(breakout_thread);
+	pthread_join(breakout_thread, &thread_result);
+
+	if (thread_result == NULL) {
+		throw js_error("execution timeout exceeded");
+	}
+#endif
+#endif
+
+	signal(SIGINT, (void (*)(int)) int_handler);
+	signal(SIGTERM, (void (*)(int)) term_handler);
 
 	if (result.IsEmpty())
 		throw js_error(try_catch);
@@ -1090,7 +1157,7 @@ CreateExecEnv(Handle<Function> function)
 }
 
 /* Source transformation from a dialect (coffee or ls) to js */
-char *
+static char *
 CompileDialect(const char *src, Dialect dialect)
 {
 	HandleScope		handle_scope(plv8_isolate);
@@ -1345,28 +1412,6 @@ find_js_function(Oid fn_oid)
 }
 
 /*
- * The signature can be either of regproc or regprocedure format.
- */
-Local<Function>
-find_js_function_by_name(const char *signature)
-{
-	Oid					funcoid;
-	Local<Function>		func;
-
-	if (strchr(signature, '(') == NULL)
-		funcoid = DatumGetObjectId(
-				DirectFunctionCall1(regprocin, CStringGetDatum(signature)));
-	else
-		funcoid = DatumGetObjectId(
-				DirectFunctionCall1(regprocedurein, CStringGetDatum(signature)));
-	func = find_js_function(funcoid);
-	if (func.IsEmpty())
-		elog(ERROR, "javascript function is not found for \"%s\"", signature);
-
-	return func;
-}
-
-/*
  * NOTICE: the returned buffer could be an internal static buffer.
  */
 const char *
@@ -1472,26 +1517,27 @@ GetGlobalContext(Persistent<Context>& global_context)
 			char perm[16];
 			strcpy(perm, "EXECUTE");
 			arg = charToText(perm);
-			Oid funcoid = DatumGetObjectId(DirectFunctionCall1(regprocin, CStringGetDatum(plv8_start_proc)));
-
-			MemSet(&fake_fcinfo, 0, sizeof(fake_fcinfo));
-			MemSet(&flinfo, 0, sizeof(flinfo));
-			fake_fcinfo.flinfo = &flinfo;
-			flinfo.fn_oid = InvalidOid;
-			flinfo.fn_mcxt = CurrentMemoryContext;
-			fake_fcinfo.nargs = 2;
-			fake_fcinfo.arg[0] = ObjectIdGetDatum(funcoid);
-			fake_fcinfo.arg[1] = CStringGetDatum(arg);
 
 			PG_TRY();
 			{
+				Oid funcoid = DatumGetObjectId(DirectFunctionCall1(regprocin, CStringGetDatum(plv8_start_proc)));
+
+				MemSet(&fake_fcinfo, 0, sizeof(fake_fcinfo));
+				MemSet(&flinfo, 0, sizeof(flinfo));
+				fake_fcinfo.flinfo = &flinfo;
+				flinfo.fn_oid = InvalidOid;
+				flinfo.fn_mcxt = CurrentMemoryContext;
+				fake_fcinfo.nargs = 2;
+				fake_fcinfo.arg[0] = ObjectIdGetDatum(funcoid);
+				fake_fcinfo.arg[1] = CStringGetDatum(arg);
+
 				Datum ret = has_function_privilege_id(&fake_fcinfo);
 
 				if (ret == 0) {
 					elog(WARNING, "failed to find js function %s", plv8_start_proc);
 				} else {
 					if (DatumGetBool(ret)) {
-						func = find_js_function_by_name(plv8_start_proc);
+						func = find_js_function(funcoid);
 					} else {
 						elog(WARNING, "no permission to execute js function %s", plv8_start_proc);
 					}
@@ -1627,14 +1673,15 @@ Converter::Init()
 {
 	for (int c = 0; c < m_tupdesc->natts; c++)
 	{
-		if (m_tupdesc->attrs[c]->attisdropped)
+		if (TupleDescAttr(m_tupdesc, c)->attisdropped)
 			continue;
 
-		m_colnames[c] = ToString(NameStr(m_tupdesc->attrs[c]->attname));
+		m_colnames[c] = ToString(NameStr(TupleDescAttr(m_tupdesc, c)->attname));
 
 		PG_TRY();
 		{
 			if (m_memcontext == NULL)
+#if PG_VERSION_NUM < 110000
 				m_memcontext = AllocSetContextCreate(
 									CurrentMemoryContext,
 									"ConverterContext",
@@ -1644,6 +1691,15 @@ Converter::Init()
 			plv8_fill_type(&m_coltypes[c],
 						   m_tupdesc->attrs[c]->atttypid,
 						   m_memcontext);
+#else
+				m_memcontext = AllocSetContextCreate(
+									CurrentMemoryContext,
+									"ConverterContext",
+									ALLOCSET_DEFAULT_SIZES);
+			plv8_fill_type(&m_coltypes[c],
+						   m_tupdesc->attrs[c].atttypid,
+						   m_memcontext);
+#endif
 		}
 		PG_CATCH();
 		{
@@ -1665,7 +1721,7 @@ Converter::ToValue(HeapTuple tuple)
 		Datum		datum;
 		bool		isnull;
 
-		if (m_tupdesc->attrs[c]->attisdropped)
+		if (TupleDescAttr(m_tupdesc, c)->attisdropped)
 			continue;
 
 #if PG_VERSION_NUM >= 90000
@@ -1713,7 +1769,7 @@ Converter::ToDatum(Handle<v8::Value> value, Tuplestorestate *tupstore)
 
 		for (int c = 0; c < m_tupdesc->natts; c++)
 		{
-			if (m_tupdesc->attrs[c]->attisdropped)
+			if (TupleDescAttr(m_tupdesc, c)->attisdropped)
 				continue;
 
 			bool found = false;
@@ -1735,7 +1791,11 @@ Converter::ToDatum(Handle<v8::Value> value, Tuplestorestate *tupstore)
 	for (int c = 0; c < m_tupdesc->natts; c++)
 	{
 		/* Make sure dropped columns are skipped by backend code. */
+#if PG_VERSION_NUM < 110000
 		if (m_tupdesc->attrs[c]->attisdropped)
+#else
+		if (m_tupdesc->attrs[c].attisdropped)
+#endif
 		{
 			nulls[c] = true;
 			continue;
