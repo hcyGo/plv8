@@ -410,10 +410,10 @@ plv8_CompileCoffee(const FunctionCallbackInfo<v8::Value>& args)
 	CString			instr(args[0]);
 	//args.GetReturnValue().Set(ToString(CompileDialect(instr.str(), PLV8_DIALECT_COFFEE)));
 	//args.GetReturnValue().Set(ToString(instr.str()));
-	const char *prosrc = CompileDialectOut(instr.str(), PLV8_DIALECT_COFFEE);
+	char *prosrc = CompileDialectOut(instr.str(), PLV8_DIALECT_COFFEE);
 	Local<String> source = ToString(prosrc);
 	args.GetReturnValue().Set(source);
-	pfree(prosrc.data);
+	pfree(prosrc);
 }
 
 static void
@@ -426,10 +426,10 @@ plv8_CompileLive(const FunctionCallbackInfo<v8::Value>& args)
 	CString			instr(args[0]);
 	//args.GetReturnValue().Set(ToString(CompileDialect(instr.str(), PLV8_DIALECT_LIVESCRIPT)));
 	//args.GetReturnValue().Set(ToString(instr.str()));	
-	const char *prosrc = CompileDialectOut(instr.str(), PLV8_DIALECT_LIVESCRIPT);
+	char *prosrc = CompileDialectOut(instr.str(), PLV8_DIALECT_LIVESCRIPT);
 	Local<String> source = ToString(prosrc);
 	args.GetReturnValue().Set(source);
-	pfree(prosrc.data);
+	pfree(prosrc);
 }
 
 static Datum
