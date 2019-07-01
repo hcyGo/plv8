@@ -204,8 +204,9 @@ CreateExternalArray(void *data, plv8_external_array_type array_type,
 static void *
 ExtractExternalArrayDatum(Handle<v8::Value> value)
 {
-	if (value->IsUndefined() || value->IsNull())
+	if (value->IsUndefined() || value->IsNull()) {
 		return NULL;
+	}
 
 	if (value->IsTypedArray())
 	{

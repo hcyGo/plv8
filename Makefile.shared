@@ -7,12 +7,12 @@
 #
 # There are two ways to build plv8.
 # 1. Dynamic link to v8 (default)
-#   You need to have libv8.so and header file installed.
+#   You need to have libv8.so and header file installed. `make shared`
 # 2. Static link to v8 with snapshot
-#   'make static' will download v8 and build, then statically link to it.
+#   'make' will download v8 and build, then statically link to it.
 #
 #-----------------------------------------------------------------------------#
-PLV8_VERSION = 2.3.0
+PLV8_VERSION = 2.3.12
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
@@ -27,9 +27,9 @@ JSS  = coffee-script.js livescript.js
 JSCS = $(JSS:.js=.cc)
 SRCS = plv8.cc plv8_type.cc plv8_func.cc plv8_param.cc $(JSCS)
 OBJS = $(SRCS:.cc=.o)
-MODULE_big = plv8
+MODULE_big = plv8-$(PLV8_VERSION)
 EXTENSION = plv8
-PLV8_DATA = plv8.control plv8--$(PLV8_VERSION).sql
+PLV8_DATA = plv8.control plv8--$(PLV8_VERSION).sql $(wildcard upgrade/*.sql)
 
 DATA = $(PLV8_DATA)
 ifndef DISABLE_DIALECT
@@ -38,7 +38,7 @@ DATA += plcoffee.control plcoffee--$(PLV8_VERSION).sql \
 endif
 DATA_built = plv8.sql
 REGRESS = init-extension plv8 plv8-errors inline json startup_pre startup varparam json_conv \
- 		  jsonb_conv window guc es6 arraybuffer composites currentresource
+ 		  jsonb_conv window guc es6 arraybuffer composites currentresource startup_perms bytea find_function_perms
 ifndef DISABLE_DIALECT
 REGRESS += dialect
 endif
@@ -77,7 +77,11 @@ else
 	endif
 endif
 
-all:
+generate_upgrades:
+	mkdir -p upgrade
+	./generate_upgrade.sh $(PLV8_VERSION)
+
+all: generate_upgrades
 
 plv8_config.h: plv8_config.h.in Makefile
 	sed -e 's/^#undef PLV8_VERSION/#define PLV8_VERSION "$(PLV8_VERSION)"/' $< > $@
@@ -96,6 +100,12 @@ endif
 
 # VERSION specific definitions
 ifeq ($(shell test $(PG_VERSION_NUM) -ge 90100 && echo yes), yes)
+
+COMPILE.cxx.bc = $(CLANG) -xc++ -Wno-ignored-attributes $(BITCODE_CXXFLAGS) $(CCFLAGS) $(CPPFLAGS) -emit-llvm -c
+
+%.bc : %.cc
+	$(COMPILE.cxx.bc) $(CCFLAGS) $(CPPFLAGS) -fPIC -c -o $@ $<
+	$(LLVM_BINPATH)/opt -module-summary -f $@ -o $@
 
 DATA_built =
 all: $(DATA)
@@ -142,8 +152,7 @@ clean: subclean
 distclean:
 	rm -rf build
 
-static:
-	$(MAKE) -f Makefile.v8
+static: all
 
 # Check if META.json.version and PLV8_VERSION is equal.
 # Ideally we want to have only one place for this number, but parsing META.json

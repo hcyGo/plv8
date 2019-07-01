@@ -6,6 +6,11 @@
  *-------------------------------------------------------------------------
  */
 #include "plv8.h"
+
+#ifdef _MSC_VER
+#undef open
+#endif
+
 #include "libplatform/libplatform.h"
 
 #include <new>
@@ -28,7 +33,28 @@ extern "C" {
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#if PG_VERSION_NUM >= 120000
+#include "catalog/pg_database.h"
+#endif
+
+#include <signal.h>
+
+#ifdef EXECUTION_TIMEOUT
+#ifdef _MSC_VER
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+#endif
+
 PG_MODULE_MAGIC;
+
+PGDLLEXPORT Datum	plv8_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plv8_call_validator(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_call_validator(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_call_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_call_validator(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(plv8_call_handler);
 PG_FUNCTION_INFO_V1(plv8_call_validator);
@@ -37,22 +63,17 @@ PG_FUNCTION_INFO_V1(plcoffee_call_validator);
 PG_FUNCTION_INFO_V1(plls_call_handler);
 PG_FUNCTION_INFO_V1(plls_call_validator);
 
-Datum	plv8_call_handler(PG_FUNCTION_ARGS);
-Datum	plv8_call_validator(PG_FUNCTION_ARGS);
-Datum	plcoffee_call_handler(PG_FUNCTION_ARGS);
-Datum	plcoffee_call_validator(PG_FUNCTION_ARGS);
-Datum	plls_call_handler(PG_FUNCTION_ARGS);
-Datum	plls_call_validator(PG_FUNCTION_ARGS);
 
-void _PG_init(void);
+PGDLLEXPORT void _PG_init(void);
 
 #if PG_VERSION_NUM >= 90000
+PGDLLEXPORT Datum	plv8_inline_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plcoffee_inline_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum	plls_inline_handler(PG_FUNCTION_ARGS);
+
 PG_FUNCTION_INFO_V1(plv8_inline_handler);
 PG_FUNCTION_INFO_V1(plcoffee_inline_handler);
 PG_FUNCTION_INFO_V1(plls_inline_handler);
-Datum	plv8_inline_handler(PG_FUNCTION_ARGS);
-Datum	plcoffee_inline_handler(PG_FUNCTION_ARGS);
-Datum	plls_inline_handler(PG_FUNCTION_ARGS);
 #endif
 } // extern "C"
 
@@ -278,7 +299,7 @@ _PG_init(void)
 								 NULL);
 
 	DefineCustomStringVariable("plv8.v8_flags",
-							   gettext_noop("V8 engine initialization flags (e.g. --es_staging for additional ES6 features)."),
+							   gettext_noop("V8 engine initialization flags (e.g. --harmony for all current harmony features)."),
 							   NULL,
 							   &plv8_v8_flags,
 							   NULL,
@@ -526,8 +547,13 @@ CallFunction(PG_FUNCTION_ARGS, plv8_exec_env *xenv,
 	}
 	else
 	{
-		for (int i = 0; i < nargs; i++)
+		for (int i = 0; i < nargs; i++) {
+#if PG_VERSION_NUM < 120000
 			args[i] = ToValue(fcinfo->arg[i], fcinfo->argnull[i], &argtypes[i]);
+#else
+			args[i] = ToValue(fcinfo->args[i].value, fcinfo->args[i].isnull, &argtypes[i]);
+#endif
+		}
 	}
 
 	Local<Object> recv = Local<Object>::New(plv8_isolate, xenv->recv);
@@ -623,8 +649,13 @@ CallSRFunction(PG_FUNCTION_ARGS, plv8_exec_env *xenv,
 	 */
 	SRFSupport support(context, &conv, tupstore);
 
-	for (int i = 0; i < nargs; i++)
+	for (int i = 0; i < nargs; i++) {
+#if PG_VERSION_NUM < 120000
 		args[i] = ToValue(fcinfo->arg[i], fcinfo->argnull[i], &argtypes[i]);
+#else
+		args[i] = ToValue(fcinfo->args[i].value, fcinfo->args[i].isnull, &argtypes[i]);
+#endif
+	}
 
 	Local<Object> recv = Local<Object>::New(plv8_isolate, xenv->recv);
 	Local<Function>		fn =
@@ -1317,7 +1348,12 @@ find_js_function(Oid fn_oid)
 		tuple = SearchSysCache(LANGNAME, NameGetDatum(&langnames[langno]), 0, 0, 0);
 		if (HeapTupleIsValid(tuple))
 		{
+#if PG_VERSION_NUM < 120000
 			Oid langtupoid = HeapTupleGetOid(tuple);
+#else
+			Form_pg_database datForm = (Form_pg_database) GETSTRUCT(tuple);
+			Oid langtupoid = datForm->oid;
+#endif
 			ReleaseSysCache(tuple);
 			if (langtupoid == prolang)
 				break;
@@ -1466,32 +1502,47 @@ GetGlobalContext(Persistent<Context>& global_context)
 			TryCatch			try_catch;
 			MemoryContext		ctx = CurrentMemoryContext;
 			text *arg;
+#if PG_VERSION_NUM < 120000
 			FunctionCallInfoData fake_fcinfo;
+#else
+			FunctionCallInfo fake_fcinfo;
+#endif
 			FmgrInfo	flinfo;
 
 			char perm[16];
 			strcpy(perm, "EXECUTE");
 			arg = charToText(perm);
-			Oid funcoid = DatumGetObjectId(DirectFunctionCall1(regprocin, CStringGetDatum(plv8_start_proc)));
-
-			MemSet(&fake_fcinfo, 0, sizeof(fake_fcinfo));
-			MemSet(&flinfo, 0, sizeof(flinfo));
-			fake_fcinfo.flinfo = &flinfo;
-			flinfo.fn_oid = InvalidOid;
-			flinfo.fn_mcxt = CurrentMemoryContext;
-			fake_fcinfo.nargs = 2;
-			fake_fcinfo.arg[0] = ObjectIdGetDatum(funcoid);
-			fake_fcinfo.arg[1] = CStringGetDatum(arg);
 
 			PG_TRY();
 			{
+				Oid funcoid = DatumGetObjectId(DirectFunctionCall1(regprocin, CStringGetDatum(plv8_start_proc)));
+#if PG_VERSION_NUM < 120000
+				MemSet(&fake_fcinfo, 0, sizeof(fake_fcinfo));
+				MemSet(&flinfo, 0, sizeof(flinfo));
+				fake_fcinfo.flinfo = &flinfo;
+				flinfo.fn_oid = InvalidOid;
+				flinfo.fn_mcxt = CurrentMemoryContext;
+				fake_fcinfo.nargs = 2;
+				fake_fcinfo.arg[0] = ObjectIdGetDatum(funcoid);
+				fake_fcinfo.arg[1] = CStringGetDatum(arg);
 				Datum ret = has_function_privilege_id(&fake_fcinfo);
+#else
+				MemSet(fake_fcinfo, 0, sizeof(fake_fcinfo));
+				MemSet(&flinfo, 0, sizeof(flinfo));
+				fake_fcinfo->flinfo = &flinfo;
+				flinfo.fn_oid = InvalidOid;
+				flinfo.fn_mcxt = CurrentMemoryContext;
+				fake_fcinfo->nargs = 2;
+				fake_fcinfo->args[0].value = ObjectIdGetDatum(funcoid);
+				fake_fcinfo->args[1].value = CStringGetDatum(arg);
+				Datum ret = has_function_privilege_id(fake_fcinfo);
+#endif
 
 				if (ret == 0) {
 					elog(WARNING, "failed to find js function %s", plv8_start_proc);
 				} else {
 					if (DatumGetBool(ret)) {
-						func = find_js_function_by_name(plv8_start_proc);
+						func = find_js_function(funcoid);
 					} else {
 						elog(WARNING, "no permission to execute js function %s", plv8_start_proc);
 					}
@@ -1627,14 +1678,15 @@ Converter::Init()
 {
 	for (int c = 0; c < m_tupdesc->natts; c++)
 	{
-		if (m_tupdesc->attrs[c]->attisdropped)
+		if (TupleDescAttr(m_tupdesc, c)->attisdropped)
 			continue;
 
-		m_colnames[c] = ToString(NameStr(m_tupdesc->attrs[c]->attname));
+		m_colnames[c] = ToString(NameStr(TupleDescAttr(m_tupdesc, c)->attname));
 
 		PG_TRY();
 		{
 			if (m_memcontext == NULL)
+#if PG_VERSION_NUM < 110000
 				m_memcontext = AllocSetContextCreate(
 									CurrentMemoryContext,
 									"ConverterContext",
@@ -1644,6 +1696,15 @@ Converter::Init()
 			plv8_fill_type(&m_coltypes[c],
 						   m_tupdesc->attrs[c]->atttypid,
 						   m_memcontext);
+#else
+				m_memcontext = AllocSetContextCreate(
+									CurrentMemoryContext,
+									"ConverterContext",
+									ALLOCSET_DEFAULT_SIZES);
+			plv8_fill_type(&m_coltypes[c],
+						   m_tupdesc->attrs[c].atttypid,
+						   m_memcontext);
+#endif
 		}
 		PG_CATCH();
 		{
@@ -1665,7 +1726,7 @@ Converter::ToValue(HeapTuple tuple)
 		Datum		datum;
 		bool		isnull;
 
-		if (m_tupdesc->attrs[c]->attisdropped)
+		if (TupleDescAttr(m_tupdesc, c)->attisdropped)
 			continue;
 
 #if PG_VERSION_NUM >= 90000
@@ -1713,7 +1774,7 @@ Converter::ToDatum(Handle<v8::Value> value, Tuplestorestate *tupstore)
 
 		for (int c = 0; c < m_tupdesc->natts; c++)
 		{
-			if (m_tupdesc->attrs[c]->attisdropped)
+			if (TupleDescAttr(m_tupdesc, c)->attisdropped)
 				continue;
 
 			bool found = false;
@@ -1735,7 +1796,11 @@ Converter::ToDatum(Handle<v8::Value> value, Tuplestorestate *tupstore)
 	for (int c = 0; c < m_tupdesc->natts; c++)
 	{
 		/* Make sure dropped columns are skipped by backend code. */
+#if PG_VERSION_NUM < 110000
 		if (m_tupdesc->attrs[c]->attisdropped)
+#else
+		if (m_tupdesc->attrs[c].attisdropped)
+#endif
 		{
 			nulls[c] = true;
 			continue;
