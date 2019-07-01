@@ -1170,6 +1170,12 @@ CreateExecEnv(Handle<Function> function)
 	return xenv;
 }
 
+char *
+CompileDialectOut(const char *src, Dialect dialect)
+{
+	return CompileDialect(src, dialect);
+}
+
 /* Source transformation from a dialect (coffee or ls) to js */
 static char *
 CompileDialect(const char *src, Dialect dialect)
