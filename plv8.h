@@ -254,7 +254,7 @@ extern v8::Local<v8::Function> find_js_function(Oid fn_oid);
 extern v8::Local<v8::Function> find_js_function_by_name(const char *signature);
 extern const char *FormatSPIStatus(int status) throw();
 extern plv8_type *get_plv8_type(PG_FUNCTION_ARGS, int argno);
-extern char *CompileDialect(const char *src, Dialect dialect);
+// extern char *CompileDialect(const char *src, Dialect dialect);
 
 // plv8_type.cc
 extern void plv8_fill_type(plv8_type *type, Oid typid, MemoryContext mcxt = NULL);
